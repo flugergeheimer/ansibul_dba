@@ -1,5 +1,5 @@
 ---
-# install_postgresql17.yml
+# playbooks/install_postgresql17.yml
 - name: Установка PostgreSQL 17 на Ubuntu
   hosts: peon
   become: yes
@@ -21,41 +21,57 @@
       ansible.builtin.apt:
         name:
           - wget
+          - curl
           - gnupg
           - lsb-release
-          - curl
           - ca-certificates
+          - software-properties-common
         state: present
     
-    # 2. Добавить репозиторий PostgreSQL
-    - name: Добавить GPG ключ PostgreSQL
-      ansible.builtin.apt_key:
-        url: "https://www.postgresql.org/media/keys/ACCC4CF8.asc"
-        state: present
-    
+    # 2. Определить версию Ubuntu
     - name: Определить кодовое имя дистрибутива
       ansible.builtin.shell:
         cmd: "lsb_release -cs"
       register: ubuntu_codename
       changed_when: false
     
+    # 3. Добавить репозиторий PostgreSQL
+    - name: Создать директорию для ключей
+      ansible.builtin.file:
+        path: "/usr/share/keyrings"
+        state: directory
+        mode: "0755"
+    
+    - name: Скачать и установить GPG ключ PostgreSQL
+      ansible.builtin.shell:
+        cmd: |
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | \
+          gpg --dearmor -o /usr/share/keyrings/postgresql.gpg
+        creates: "/usr/share/keyrings/postgresql.gpg"
+    
     - name: Добавить репозиторий PostgreSQL
       ansible.builtin.apt_repository:
-        repo: "deb https://apt.postgresql.org/pub/repos/apt {{ ubuntu_codename.stdout }}-pgdg main {{ postgresql_version }}"
+        repo: "deb [signed-by=/usr/share/keyrings/postgresql.gpg] https://apt.postgresql.org/pub/repos/apt {{ ubuntu_codename.stdout }}-pgdg main {{ postgresql_version }}"
         state: present
         update_cache: yes
+        filename: "postgresql.list"
     
-    # 3. Установить PostgreSQL
-    - name: Установить PostgreSQL 17 и утилиты
+    # 4. Установить PostgreSQL
+    - name: Установить PostgreSQL 17
       ansible.builtin.apt:
         name:
           - "postgresql-{{ postgresql_version }}"
           - "postgresql-client-{{ postgresql_version }}"
           - "postgresql-contrib-{{ postgresql_version }}"
-          - "pg-activity"
         state: present
     
-    # 4. Настроить PostgreSQL
+    # 5. Дать время на создание кластера
+    - name: Подождать создания кластера PostgreSQL
+      ansible.builtin.wait_for:
+        path: "/etc/postgresql/{{ postgresql_version }}/main/postgresql.conf"
+        timeout: 30
+    
+    # 6. Настроить PostgreSQL
     - name: Настроить listen_addresses
       ansible.builtin.lineinfile:
         path: "/etc/postgresql/{{ postgresql_version }}/main/postgresql.conf"
@@ -70,7 +86,7 @@
         line: "port = {{ postgresql_port }}"
         backup: yes
     
-    # 5. Настроить доступ в pg_hba.conf
+    # 7. Настроить доступ в pg_hba.conf
     - name: Разрешить парольную аутентификацию для localhost
       ansible.builtin.lineinfile:
         path: "/etc/postgresql/{{ postgresql_version }}/main/pg_hba.conf"
@@ -78,7 +94,7 @@
         insertafter: "^# IPv4 local connections:"
         backup: yes
     
-    # 6. Перезапустить PostgreSQL
+    # 8. Перезапустить PostgreSQL
     - name: Перезапустить PostgreSQL
       ansible.builtin.systemd:
         name: "postgresql"
@@ -86,7 +102,7 @@
         enabled: yes
         daemon_reload: yes
     
-    # 7. Проверить установку
+    # 9. Проверить установку
     - name: Проверить что PostgreSQL слушает порт
       ansible.builtin.wait_for:
         port: "{{ postgresql_port }}"
@@ -105,7 +121,7 @@
       register: db_check
       changed_when: false
     
-    # 8. Отчёт
+    # 10. Отчёт
     - name: Показать результат установки
       ansible.builtin.debug:
         msg: |
@@ -119,4 +135,8 @@
           sudo -u postgres psql
           или
           psql -h localhost -U postgres
+          
+          Конфиги:
+          /etc/postgresql/{{ postgresql_version }}/main/postgresql.conf
+          /etc/postgresql/{{ postgresql_version }}/main/pg_hba.conf
           ===============================
