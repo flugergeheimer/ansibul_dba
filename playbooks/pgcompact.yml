@@ -1,0 +1,251 @@
+---
+# playbooks/pgcompact.yml
+- name: Сжатие таблиц PostgreSQL с помощью pgcompacttable
+  hosts: postgres_servers
+  gather_facts: yes
+
+  vars:
+    # Дефолтные значения (переопределяются инвентарём или -e)
+    pg_host: "{{ ansible_host }}"
+    pg_port: 5432
+    pg_user: postgres
+    schema: public
+    pgcompact_path: /tmp/pgcompacttable
+    pgcompact_options: "--verbose --force"
+
+  pre_tasks:
+    - name: Проверить обязательные параметры
+      ansible.builtin.fail:
+        msg: |
+          Укажите обязательные параметры в инвентаре или через -e:
+
+          Пример инвентаря:
+            pg_database: mydb
+            target_table: mytable
+
+          Или через командную строку:
+            ansible-playbook -i inventory/pgcompact/ pgcompact.yml \
+              -e "pg_database=mydb target_table=mytable"
+      when:
+        - pg_database is not defined
+        - target_table is not defined
+
+  tasks:
+    # ========== 1. Проверка ОС и зависимостей ==========
+    - name: Собрать информацию о пакетах
+      ansible.builtin.package_facts:
+        manager: auto
+      tags: [deps, check]
+
+    - name: Проверить зависимости для Debian/Ubuntu
+      ansible.builtin.fail:
+        msg: |
+          Для Debian/Ubuntu требуются пакеты:
+          - libdbi-perl
+          - libdbd-pg-perl
+
+          Установите вручную:
+          sudo apt update && sudo apt install libdbi-perl libdbd-pg-perl
+
+          Затем повторите запуск плейбука.
+      when:
+        - ansible_os_family == "Debian"
+        - not ('libdbi-perl' in ansible_facts.packages and 'libdbd-pg-perl' in ansible_facts.packages)
+      tags: [deps, check]
+
+    - name: Проверить зависимости для RHEL/CentOS
+      ansible.builtin.fail:
+        msg: |
+          Для RHEL/CentOS требуются пакеты:
+          - perl-Time-HiRes
+          - perl-DBI
+          - perl-DBD-Pg
+
+          Установите вручную:
+          sudo yum install perl-Time-HiRes perl-DBI perl-DBD-Pg
+
+          Затем повторите запуск плейбука.
+      when:
+        - ansible_os_family == "RedHat"
+        - not (('perl-Time-HiRes' in ansible_facts.packages or 'perl-Time-HiRes.x86_64' in ansible_facts.packages) and
+               ('perl-DBI' in ansible_facts.packages or 'perl-DBI.x86_64' in ansible_facts.packages) and
+               ('perl-DBD-Pg' in ansible_facts.packages or 'perl-DBD-Pg.x86_64' in ansible_facts.packages))
+      tags: [deps, check]
+
+    # ========== 2. Проверка подключения к БД ==========
+    - name: Проверить доступность PostgreSQL
+      community.postgresql.postgresql_ping:
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password | default(omit) }}"
+      register: pg_connect
+      tags: [db, check]
+
+    - name: Выйти если нет подключения к БД
+      ansible.builtin.fail:
+        msg: |
+          Нет подключения к PostgreSQL {{ pg_host }}:{{ pg_port }}
+          Пользователь: {{ pg_user }}
+          Проверьте:
+          1. Сервис PostgreSQL запущен
+          2. Пользователь {{ pg_user }} существует
+          3. Пароль правильный (передаётся через pg_password)
+          4. Разрешены подключения в pg_hba.conf
+      when: not pg_connect.is_available
+      tags: [db, check]
+
+    # ========== 3. Проверка существования таблицы ==========
+    - name: Проверить существование таблицы {{ schema }}.{{ target_table }}
+      community.postgresql.postgresql_query:
+        query: |
+          SELECT EXISTS(
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = '{{ schema }}'
+            AND table_name = '{{ target_table }}'
+          )
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password | default(omit) }}"
+        database: "{{ pg_database }}"
+      register: table_exists
+      tags: [db, check]
+
+    - name: Выйти если таблицы не существует
+      ansible.builtin.fail:
+        msg: |
+          Таблица {{ schema }}.{{ target_table }} не существует в БД {{ pg_database }}
+
+          Проверьте:
+          1. Правильность имени базы данных: {{ pg_database }}
+          2. Правильность схемы: {{ schema }}
+          3. Правильность имени таблицы: {{ target_table }}
+          4. Права пользователя {{ pg_user }} на чтение таблицы
+      when: not table_exists.query_result[0].exists
+      tags: [db, check]
+
+    # ========== 4. Проверка и установка расширения pgstattuple ==========
+    - name: Проверить наличие расширения pgstattuple
+      community.postgresql.postgresql_query:
+        query: "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'pgstattuple')"
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password | default(omit) }}"
+        database: "{{ pg_database }}"
+      register: extension_exists
+      changed_when: false
+      tags: [db, check]
+
+    - name: Установить расширение pgstattuple (если отсутствует)
+      community.postgresql.postgresql_ext:
+        name: pgstattuple
+        database: "{{ pg_database }}"
+        login_host: "{{ pg_host }}"
+        login_port: "{{ pg_port }}"
+        login_user: "{{ pg_user }}"
+        login_password: "{{ pg_password | default(omit) }}"
+        state: present
+      when: not extension_exists.query_result[0].exists
+      tags: [db, setup]
+
+    # ========== 5. Скачивание утилиты pgcompacttable ==========
+    - name: Проверить наличие pgcompacttable
+      ansible.builtin.stat:
+        path: "{{ pgcompact_path }}"
+      register: pgcompact_bin
+      changed_when: false
+      tags: [tools, check]
+
+    - name: Скачать pgcompacttable (только если отсутствует)
+      ansible.builtin.get_url:
+        url: "https://raw.githubusercontent.com/dataegret/pgcompacttable/master/bin/pgcompacttable"
+        dest: "{{ pgcompact_path }}"
+        mode: "0755"
+        force: no
+        timeout: 30
+        validate_certs: yes
+      when: not pgcompact_bin.stat.exists
+      register: download_result
+      tags: [tools, setup]
+
+    - name: Убедиться что утилита доступна
+      ansible.builtin.fail:
+        msg: |
+          Утилита pgcompacttable не найдена и не была скачана.
+
+          Решения:
+          1. Проверьте доступность интернета с хоста
+          2. Скачайте вручную:
+             wget -O {{ pgcompact_path }} \
+               https://raw.githubusercontent.com/dataegret/pgcompacttable/master/bin/pgcompacttable
+             chmod +x {{ pgcompact_path }}
+          3. Или укажите существующий путь через переменную pgcompact_path
+      when:
+        - not pgcompact_bin.stat.exists
+        - download_result is defined and download_result is failed
+      tags: [tools, check]
+
+    # ========== 6. Запуск pgcompacttable ==========
+    - name: Создать команду для запуска
+      ansible.builtin.set_fact:
+        compact_cmd: |
+          {{ pgcompact_path }} \
+            -d {{ pg_database }} \
+            -t {{ schema }}.{{ target_table }} \
+            --host {{ pg_host }} \
+            --port {{ pg_port }} \
+            {{ pgcompact_options }}
+      tags: [run]
+
+    - name: Показать команду для запуска (debug)
+      ansible.builtin.debug:
+        msg: "Будет выполнено: {{ compact_cmd | replace('\n', ' ') }}"
+      when: debug_mode | default(false)
+      tags: [run, debug]
+
+    - name: Запустить сжатие таблицы
+      ansible.builtin.command:
+        cmd: "{{ compact_cmd }}"
+      environment:
+        PGUSER: "{{ pg_user }}"
+        PGPASSWORD: "{{ pg_password | default(omit) }}"
+        PGHOST: "{{ pg_host }}"
+        PGPORT: "{{ pg_port }}"
+      async: 3600  # максимум 1 час на выполнение
+      poll: 30     # проверять статус каждые 30 секунд
+      register: compact_result
+      tags: [run]
+
+    - name: Показать результат выполнения
+      ansible.builtin.debug:
+        msg: |
+          Результат сжатия таблицы {{ schema }}.{{ target_table }}:
+          Статус: {{ compact_result.rc }}
+          Выходные данные: {{ compact_result.stdout_lines | default([]) }}
+          Ошибки: {{ compact_result.stderr_lines | default([]) }}
+      tags: [run, results]
+
+    - name: Завершить с ошибкой если pgcompacttable завершился с ошибкой
+      ansible.builtin.fail:
+        msg: |
+          pgcompacttable завершился с ошибкой (код {{ compact_result.rc }})
+
+          {{ compact_result.stderr | default('Нет сообщения об ошибке') }}
+      when: compact_result.rc != 0
+      tags: [run, results]
+
+  post_tasks:
+    - name: Отчёт о выполнении
+      ansible.builtin.debug:
+        msg: |
+          =========================================
+          СЖАТИЕ ТАБЛИЦЫ ЗАВЕРШЕНО
+          =========================================
+          Хост: {{ inventory_hostname }}
+          База данных: {{ pg_database }}
+          Таблица: {{ schema }}.{{ target_table }}
+          Статус: {{ 'УСПЕШНО' if compact_result.rc == 0 else 'С ОШИБКОЙ' }}
+          =========================================
+      tags: [results]
