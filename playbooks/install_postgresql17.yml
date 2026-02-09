@@ -1,0 +1,122 @@
+---
+# install_postgresql17.yml
+- name: Установка PostgreSQL 17 на Ubuntu
+  hosts: peon
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    postgresql_version: "17"
+    postgresql_port: 5432
+    postgresql_listen_addresses: "'*'"
+  
+  tasks:
+    # 1. Обновить apt и установить зависимости
+    - name: Обновить apt cache
+      ansible.builtin.apt:
+        update_cache: yes
+        cache_valid_time: 3600
+    
+    - name: Установить зависимости
+      ansible.builtin.apt:
+        name:
+          - wget
+          - gnupg
+          - lsb-release
+          - curl
+          - ca-certificates
+        state: present
+    
+    # 2. Добавить репозиторий PostgreSQL
+    - name: Добавить GPG ключ PostgreSQL
+      ansible.builtin.apt_key:
+        url: "https://www.postgresql.org/media/keys/ACCC4CF8.asc"
+        state: present
+    
+    - name: Определить кодовое имя дистрибутива
+      ansible.builtin.shell:
+        cmd: "lsb_release -cs"
+      register: ubuntu_codename
+      changed_when: false
+    
+    - name: Добавить репозиторий PostgreSQL
+      ansible.builtin.apt_repository:
+        repo: "deb https://apt.postgresql.org/pub/repos/apt {{ ubuntu_codename.stdout }}-pgdg main {{ postgresql_version }}"
+        state: present
+        update_cache: yes
+    
+    # 3. Установить PostgreSQL
+    - name: Установить PostgreSQL 17 и утилиты
+      ansible.builtin.apt:
+        name:
+          - "postgresql-{{ postgresql_version }}"
+          - "postgresql-client-{{ postgresql_version }}"
+          - "postgresql-contrib-{{ postgresql_version }}"
+          - "pg-activity"
+        state: present
+    
+    # 4. Настроить PostgreSQL
+    - name: Настроить listen_addresses
+      ansible.builtin.lineinfile:
+        path: "/etc/postgresql/{{ postgresql_version }}/main/postgresql.conf"
+        regexp: "^#?listen_addresses\\s*="
+        line: "listen_addresses = {{ postgresql_listen_addresses }}"
+        backup: yes
+    
+    - name: Настроить порт
+      ansible.builtin.lineinfile:
+        path: "/etc/postgresql/{{ postgresql_version }}/main/postgresql.conf"
+        regexp: "^#?port\\s*="
+        line: "port = {{ postgresql_port }}"
+        backup: yes
+    
+    # 5. Настроить доступ в pg_hba.conf
+    - name: Разрешить парольную аутентификацию для localhost
+      ansible.builtin.lineinfile:
+        path: "/etc/postgresql/{{ postgresql_version }}/main/pg_hba.conf"
+        line: "host    all             all             127.0.0.1/32            md5"
+        insertafter: "^# IPv4 local connections:"
+        backup: yes
+    
+    # 6. Перезапустить PostgreSQL
+    - name: Перезапустить PostgreSQL
+      ansible.builtin.systemd:
+        name: "postgresql"
+        state: restarted
+        enabled: yes
+        daemon_reload: yes
+    
+    # 7. Проверить установку
+    - name: Проверить что PostgreSQL слушает порт
+      ansible.builtin.wait_for:
+        port: "{{ postgresql_port }}"
+        host: "localhost"
+        delay: 5
+        timeout: 30
+    
+    - name: Проверить версию PostgreSQL
+      ansible.builtin.command:
+        cmd: "psql --version"
+      register: psql_version
+    
+    - name: Проверить подключение к БД
+      ansible.builtin.shell:
+        cmd: "sudo -u postgres psql -c 'SELECT version();'"
+      register: db_check
+      changed_when: false
+    
+    # 8. Отчёт
+    - name: Показать результат установки
+      ansible.builtin.debug:
+        msg: |
+          ===============================
+          PostgreSQL {{ postgresql_version }} установлен на {{ inventory_hostname }}
+          Версия: {{ psql_version.stdout }}
+          Порт: {{ postgresql_port }}
+          Статус: {{ 'РАБОТАЕТ' if db_check.rc == 0 else 'ОШИБКА' }}
+          
+          Для подключения:
+          sudo -u postgres psql
+          или
+          psql -h localhost -U postgres
+          ===============================
