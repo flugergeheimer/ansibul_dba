@@ -30,26 +30,22 @@
         - not ('libdbd-pg-perl' in ansible_facts.packages)
 
 
-   # ========== 3. Установить psycopg2 для модулей PostgreSQL ==========
-#    - name: Установить psycopg2
-#      ansible.builtin.apt:
-#        name: python3-psycopg2
-#        state: present
-#        update_cache: yes
-#      when: ansible_os_family == "Debian"
+    # ========== 3. Проверка установки psycopg2 ==========
+    - name: Проверить что psycopg2 установлен
+      ansible.builtin.shell:
+        cmd: "python3 -c 'import psycopg2'"
+      register: psycopg_check
+      changed_when: false
+      ignore_errors: true
 
-
-    # ========== 2. Установить psycopg2 для Python 3.13 ==========
-    - name: Установить pip если нет
-      ansible.builtin.apt:
-        name: python3-pip
-        state: present
-      when: ansible_os_family == "Debian"
-    
-    - name: Установить psycopg2-binary через pip
-      ansible.builtin.pip:
-        name: psycopg2-binary
-        executable: pip3      
+    - name: Выйти если psycopg2 не установлен
+      ansible.builtin.fail:
+        msg: |
+          psycopg2 не установлен!
+          
+          Установите на {{ inventory_hostname }}:
+          sudo apt install python3-psycopg2
+      when: psycopg_check.rc != 0
 
 
     # ========== 4. Проверить наличие задач ==========
@@ -91,6 +87,7 @@
         msg: "Нет подключения к PostgreSQL {{ current_host }}:{{ current_port }}"
       when: not pg_connect.is_available
 
+
     # ========== 7. Проверка существования таблицы ==========
     - name: Проверить существование таблицы
       community.postgresql.postgresql_query:
@@ -104,7 +101,7 @@
         login_port: "{{ current_port }}"
         login_user: "{{ current_user }}"
         login_password: "{{ pg_password | default(omit) }}"
-        database: "{{ current_db }}"
+        login_db: "{{ current_db }}"
       register: table_exists
 
     - name: Выйти если таблицы нет
@@ -120,7 +117,7 @@
         login_port: "{{ current_port }}"
         login_user: "{{ current_user }}"
         login_password: "{{ pg_password | default(omit) }}"
-        database: "{{ current_db }}"
+        login_db: "{{ current_db }}"
       register: extension_exists
       changed_when: false
 
@@ -133,8 +130,8 @@
         login_user: "{{ current_user }}"
         login_password: "{{ pg_password | default(omit) }}"
         state: present
-      when: not extension_exists.query_result[0].exists
-
+      when: not extension_exists.query_result[0].exists  
+  
     # ========== 9. Скачивание утилиты pgcompacttable ==========
     - name: Проверить наличие pgcompacttable
       ansible.builtin.stat:
@@ -151,6 +148,15 @@
       when: not pgcompact_bin.stat.exists
 
     # ========== 10. Запуск pgcompacttable ==========
+    - name: Показать параметры подключения
+      ansible.builtin.debug:
+        msg: |
+          Будут использованы:
+          Пользователь: {{ current_user }}
+          Хост: {{ current_host }}
+          Порт: {{ current_port }}
+          БД: {{ current_db }}
+
     - name: Запустить сжатие таблицы
       ansible.builtin.command:
         cmd: |
@@ -159,27 +165,42 @@
             -t {{ current_schema }}.{{ current_table }} \
             --host {{ current_host }} \
             --port {{ current_port }} \
+            --user {{ current_user }} \
             {{ pgcompact_options }}
       environment:
-        PGUSER: "{{ current_user }}"
         PGPASSWORD: "{{ pg_password | default(omit) }}"
-        PGHOST: "{{ current_host }}"
-        PGPORT: "{{ current_port }}"
       async: 3600
       poll: 30
       register: compact_result
 
+
     # ========== 11. Отчёт ==========
-    - name: Показать результат
+
+    - name: Основная информация
       ansible.builtin.debug:
         msg: |
-          =========================================
-          РЕЗУЛЬТАТ СЖАТИЯ:
+          СЖАТИЕ ТАБЛИЦЫ ЗАВЕРШЕНО
           Хост: {{ inventory_hostname }}
-          База данных: {{ current_db }}:{{ current_port }}
+          База: {{ current_db }}:{{ current_port }}
           Таблица: {{ current_schema }}.{{ current_table }}
-          Статус: {{ 'УСПЕШНО' if compact_result.rc == 0 else 'ОШИБКА' }}
-          =========================================
-          Вывод: {{ compact_result.stdout_lines | default([]) }}
-          Ошибки: {{ compact_result.stderr_lines | default([]) }}
-          =========================================
+          Статус: {{ '✅ УСПЕШНО' if compact_result.rc == 0 else '❌ ОШИБКА' }}
+
+    - name: Вывод команды
+      ansible.builtin.debug:
+        msg: "{{ item }}"
+      loop: "{{ compact_result.stdout_lines }}"
+      when: compact_result.stdout_lines | length > 0
+      loop_control:
+        label: "Вывод"
+
+    - name: Ошибки команды
+      ansible.builtin.debug:
+        msg: "{{ item }}"
+      loop: "{{ compact_result.stderr_lines }}"
+      when: compact_result.stderr_lines | length > 0
+      loop_control:
+        label: "Ошибка"
+
+    - name: Итоговый разделитель
+      ansible.builtin.debug:
+        msg: "════════════════════════════════════════"
