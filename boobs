@@ -1,1 +1,5 @@
 (.)(.)
+
+
+git config --global user.email "victor.mayski@gmail.com"
+git config --global user.name "flugergeheimer"

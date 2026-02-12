@@ -1,0 +1,16 @@
+# vars.yml
+# Простые переменные
+username: "alex"
+max_connections: 100
+
+# Списки
+packages:
+  - git
+  - curl
+  - vim
+
+# Словари
+database:
+  host: "localhost"
+  port: 5432
+  name: "myapp"

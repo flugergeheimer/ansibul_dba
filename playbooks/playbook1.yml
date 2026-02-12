@@ -1,19 +1,13 @@
----
-- name: this is play one
-  gather_facts: no
-  hosts: localhost
+# playbook.yml
+- hosts: peon
+  vars_files:
+    - vars.yml       # подгружаем внешний файл
   tasks:
-    - name: this is task one
-      debug:
-        msg: this is message one
-    - name: this is task two
-      debug:
-        msg: this is message two
+    - debug:
+        msg: "{{ app_user }}"
 
-- name: this is play two
-  gather_facts: no
-  hosts: localhost
-  tasks:
-    - name: this is task three
-      debug:
-        msg: this is message three
+    - name: Создать пользователя
+      user:
+        name: "{{ username }}"  # alex
+        groups: "sudo"
+        
