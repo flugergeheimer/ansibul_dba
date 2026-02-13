@@ -1,6 +1,7 @@
 ---
 # playbook.yml
 - hosts: peon
+  gather_facts: no
   vars_files:
     - vars.yml       # подгружаем внешний файл
   tasks:
@@ -11,4 +12,4 @@
       user:
         name: "{{ username }}"  # alex
         groups: "sudo"
-        state: absent
+#        state: absent
