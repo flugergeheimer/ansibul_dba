@@ -5,7 +5,7 @@
     - vars.yml       # подгружаем внешний файл
   tasks:
     - debug:
-        msg: "{{ app_user }}"
+        msg: "{{ username }}"
 
     - name: Создать пользователя
       user:

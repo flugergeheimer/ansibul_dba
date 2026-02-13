@@ -1,10 +1,21 @@
 (.)(.)
 
 
+git fix
+==============================================================
+
+ssh-add ~/.ssh/gitty  
+
+git config --global --list
+
 git config --global user.email "victor.mayski@gmail.com"
 git config --global user.name "flugergeheimer"
 
 
 
+
+run playboys
+===============================================================
+
 cd /home/ansible/ansibul_dba
-ansible-playbook playbook1.yml
+ansible-playbook -i /home/ansible/ansibul_dba/inventory /home/ansible/ansibul_dba/playbooks/playbook1.yml
