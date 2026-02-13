@@ -1,3 +1,4 @@
+---
 # playbook.yml
 - hosts: peon
   vars_files:
