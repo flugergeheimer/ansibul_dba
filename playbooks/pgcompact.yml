@@ -74,22 +74,64 @@
         current_user: "{{ pg_user | default('postgres') }}"
 
     # ========== 6. Проверка подключения к БД ==========
-    - name: Проверить доступность PostgreSQL
+    #- name: Проверить доступность PostgreSQL
+    #  community.postgresql.postgresql_ping:
+    #    login_host: "{{ current_host }}"
+    #    login_port: "{{ current_port }}"
+    #    login_user: "{{ current_user }}"
+    #    login_password: "{{ pg_password | default(omit) }}"
+    ##  register: pg_connect
+    #
+#
+    #- name: Выйти если нет подключения к БД
+    #  ansible.builtin.fail:
+    #    msg: "Нет подключения к PostgreSQL {{ current_host }}:{{ current_port }}"
+    #  when: not pg_connect.is_available
+#
+
+    # ========== 6. Проверка подключения к БД через postgres пользователя ==========
+    - name: Проверить доступность PostgreSQL (через postgres)
+      become: yes
+      become_user: postgres
       community.postgresql.postgresql_ping:
-        login_host: "{{ current_host }}"
-        login_port: "{{ current_port }}"
-        login_user: "{{ current_user }}"
-        login_password: "{{ pg_password | default(omit) }}"
+        login_unix_socket: "/var/run/postgresql"
+        login_user: postgres
+        db: postgres
       register: pg_connect
+      changed_when: false
 
     - name: Выйти если нет подключения к БД
       ansible.builtin.fail:
-        msg: "Нет подключения к PostgreSQL {{ current_host }}:{{ current_port }}"
+        msg: "Нет локального подключения к PostgreSQL от пользователя postgres"
       when: not pg_connect.is_available
 
+      
+
+   # # ========== 7. Проверка существования таблицы ==========
+   # - name: Проверить существование таблицы
+   #   community.postgresql.postgresql_query:
+   #     query: |
+   #       SELECT EXISTS(
+   #         SELECT 1 FROM information_schema.tables
+   #         WHERE table_schema = '{{ current_schema }}'
+   #         AND table_name = '{{ current_table }}'
+   #       )
+   #     login_host: "{{ current_host }}"
+   #     login_port: "{{ current_port }}"
+   #     login_user: "{{ current_user }}"
+   #     login_password: "{{ pg_password | default(omit) }}"
+   #     login_db: "{{ current_db }}"
+   #   register: table_exists
+#
+   # - name: Выйти если таблицы нет
+   #   ansible.builtin.fail:
+   #     msg: "Таблица {{ current_schema }}.{{ current_table }} не существует в БД {{ current_db }}"
+   #   when: not table_exists.query_result[0].exists
 
     # ========== 7. Проверка существования таблицы ==========
-    - name: Проверить существование таблицы
+    - name: Проверить существование таблицы {{ current_schema }}.{{ current_table }}
+      become: yes
+      become_user: postgres
       community.postgresql.postgresql_query:
         query: |
           SELECT EXISTS(
@@ -97,10 +139,8 @@
             WHERE table_schema = '{{ current_schema }}'
             AND table_name = '{{ current_table }}'
           )
-        login_host: "{{ current_host }}"
-        login_port: "{{ current_port }}"
-        login_user: "{{ current_user }}"
-        login_password: "{{ pg_password | default(omit) }}"
+        login_unix_socket: "/var/run/postgresql"
+        login_user: postgres
         login_db: "{{ current_db }}"
       register: table_exists
 
@@ -109,29 +149,58 @@
         msg: "Таблица {{ current_schema }}.{{ current_table }} не существует в БД {{ current_db }}"
       when: not table_exists.query_result[0].exists
 
+
+
+
+
+   # # ========== 8. Проверка и установка расширения pgstattuple ==========
+   # - name: Проверить наличие расширения pgstattuple
+   #   community.postgresql.postgresql_query:
+   #     query: "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'pgstattuple')"
+   #     login_host: "{{ current_host }}"
+   #     login_port: "{{ current_port }}"
+   #     login_user: "{{ current_user }}"
+   #     login_password: "{{ pg_password | default(omit) }}"
+   #     login_db: "{{ current_db }}"
+   #   register: extension_exists
+   #   changed_when: false
+#
+   # - name: Установить расширение pgstattuple (если отсутствует)
+   #   community.postgresql.postgresql_ext:
+   #     name: pgstattuple
+   #     database: "{{ current_db }}"
+   #     login_host: "{{ current_host }}"
+   #     login_port: "{{ current_port }}"
+   #     login_user: "{{ current_user }}"
+   #     login_password: "{{ pg_password | default(omit) }}"
+   #     state: present
+   #   when: not extension_exists.query_result[0].exists  
+  
     # ========== 8. Проверка и установка расширения pgstattuple ==========
     - name: Проверить наличие расширения pgstattuple
+      become: yes
+      become_user: postgres
       community.postgresql.postgresql_query:
-        query: "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'pgstattuple')"
-        login_host: "{{ current_host }}"
-        login_port: "{{ current_port }}"
-        login_user: "{{ current_user }}"
-        login_password: "{{ pg_password | default(omit) }}"
+        query: "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'pgstattuple') AS ext_exists"
+        login_unix_socket: "/var/run/postgresql"
+        login_user: postgres
         login_db: "{{ current_db }}"
       register: extension_exists
       changed_when: false
 
     - name: Установить расширение pgstattuple (если отсутствует)
+      become: yes
+      become_user: postgres
       community.postgresql.postgresql_ext:
         name: pgstattuple
-        database: "{{ current_db }}"
-        login_host: "{{ current_host }}"
-        login_port: "{{ current_port }}"
-        login_user: "{{ current_user }}"
-        login_password: "{{ pg_password | default(omit) }}"
+        db: "{{ current_db }}"
+        login_unix_socket: "/var/run/postgresql"
+        login_user: postgres
         state: present
-      when: not extension_exists.query_result[0].exists  
-  
+      when: not extension_exists.query_result[0].ext_exists
+
+
+
     # ========== 9. Скачивание утилиты pgcompacttable ==========
     - name: Проверить наличие pgcompacttable
       ansible.builtin.stat:
@@ -147,31 +216,58 @@
         timeout: 30
       when: not pgcompact_bin.stat.exists
 
+ #  # ========== 10. Запуск pgcompacttable ==========
+ #  - name: Показать параметры подключения
+ #    ansible.builtin.debug:
+ #      msg: |
+ #        Будут использованы:
+ #        Пользователь: {{ current_user }}
+ #        Хост: {{ current_host }}
+ #        Порт: {{ current_port }}
+ #        БД: {{ current_db }}
+
+ #  - name: Запустить сжатие таблицы
+ #    ansible.builtin.command:
+ #      cmd: |
+ #        {{ pgcompact_path }} \
+ #          -d {{ current_db }} \
+ #          -t {{ current_schema }}.{{ current_table }} \
+ #          --host {{ current_host }} \
+ #          --port {{ current_port }} \
+ #          --user {{ current_user }} \
+ #          {{ pgcompact_options }}
+ #    environment:
+ #      PGPASSWORD: "{{ pg_password | default(omit) }}"
+ #    async: 3600
+ #    poll: 30
+ #    register: compact_result
+
     # ========== 10. Запуск pgcompacttable ==========
     - name: Показать параметры подключения
       ansible.builtin.debug:
         msg: |
           Будут использованы:
-          Пользователь: {{ current_user }}
-          Хост: {{ current_host }}
-          Порт: {{ current_port }}
+          Пользователь: postgres
+          Подключение: локальный socket (/var/run/postgresql)
           БД: {{ current_db }}
+          Таблица: {{ current_schema }}.{{ current_table }}
+          Режим: sudo -u postgres
 
-    - name: Запустить сжатие таблицы
+    - name: Запустить сжатие таблицы от пользователя postgres
+      become: yes
+      become_user: postgres
       ansible.builtin.command:
         cmd: |
           {{ pgcompact_path }} \
             -d {{ current_db }} \
             -t {{ current_schema }}.{{ current_table }} \
-            --host {{ current_host }} \
+            --host localhost \
             --port {{ current_port }} \
-            --user {{ current_user }} \
             {{ pgcompact_options }}
-      environment:
-        PGPASSWORD: "{{ pg_password | default(omit) }}"
       async: 3600
       poll: 30
       register: compact_result
+
 
 
     # ========== 11. Отчёт ==========
