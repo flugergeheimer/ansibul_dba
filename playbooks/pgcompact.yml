@@ -1,4 +1,8 @@
 ---
+###  edit vars in inventory: inventory/pgcompact/pgcompact_hosts.yml
+###  how to run playboy:
+###  ansible-playbook -i inventories/dba_test_servers/pgcompact_hosts.yml -k -K playbook/pgcompact.yml
+###
 # playbooks/pgcompact.yml
 - name: Сжатие таблиц PostgreSQL с помощью pgcompacttable
   hosts: postgres_servers
